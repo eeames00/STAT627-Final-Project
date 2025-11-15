@@ -1,0 +1,157 @@
+##Load Libraries
+
+library(readxl)
+library(dplyr)
+library(stringr)
+library(glmnet)
+library(Metrics)
+library(tidyr)
+
+##Read in Excel File
+reg_df <- read_excel("/Users/emilyeames/Desktop/wage_df.xlsx", skip = 1)
+
+wages_df <- reg_df |>
+  rename(
+    occupation     = 1, 
+    total_workers  = 2,
+    total_earnings = 3,
+    men_workers    = 4,
+    men_earnings   = 5,
+    women_workers  = 6,
+    women_earnings = 7
+  )
+
+## Clean and Preprocess
+
+
+clean_numeric <- function(x) {
+  x <- str_replace_all(x, "\\$", "")   
+  x <- str_replace_all(x, ",", "")    
+  x <- na_if(x, "-")                   
+  as.numeric(x)
+}
+
+
+wages_clean <- wages_df |>
+  mutate(
+    total_workers  = clean_numeric(total_workers),
+    men_workers    = clean_numeric(men_workers),
+    women_workers  = clean_numeric(women_workers),
+    total_earnings = clean_numeric(total_earnings),
+    men_earnings   = clean_numeric(men_earnings),
+    women_earnings = clean_numeric(women_earnings),
+    pct_women      = women_workers / total_workers,
+    pct_men        = men_workers / total_workers,     
+    gender_gap     = men_earnings - women_earnings
+  ) |>
+  filter(!is.na(total_earnings))
+
+
+## Model Matrix 
+
+model_data <- wages_clean |>
+  select(total_earnings, men_earnings, women_earnings, pct_women)
+
+X <- model.matrix(total_earnings ~ men_earnings + women_earnings + pct_women,
+                  data = model_data)[, -1]  
+y <- model_data$total_earnings
+
+
+##OSL Baseline
+ols_model <- lm(total_earnings ~ men_earnings + women_earnings + pct_women, data = model_data)
+summary(ols_model)
+
+ols_pred <- predict(ols_model, newdata = model_data)
+rmse(y, ols_pred)
+
+##Correlation Check
+
+corr_data <- wages_clean |>
+  filter(complete.cases(men_earnings, women_earnings))
+
+cor_men_women <- cor(corr_data$men_earnings, corr_data$women_earnings)
+cor_men_women
+
+ggplot(corr_data, aes(x = men_earnings, y = women_earnings)) +
+  geom_point(color = "steelblue", alpha = 0.6) +
+  geom_smooth(method = "lm", color = "purple", se = TRUE) + 
+  labs(
+    title = "Correlation between Men's and Women's Earnings",
+    x = "Men's Median Weekly Earnings",
+    y = "Women's Median Weekly Earnings"
+  ) +
+  theme_minimal()
+
+  ## Filter and Check Dimenstions for Ridge and Lasso
+
+model_data <- wages_clean |>
+  select(total_earnings, men_earnings, women_earnings, pct_women) |>
+  filter(complete.cases(.))  
+
+X <- model.matrix(total_earnings ~ men_earnings + women_earnings + pct_women,
+                  data = model_data)[, -1] 
+y <- model_data$total_earnings
+
+dim(X)      
+length(y)
+
+## Ridge Regression
+
+cv_ridge <- cv.glmnet(X, y, alpha = 0)
+ridge_best <- glmnet(X, y, alpha = 0, lambda = cv_ridge$lambda.min)
+coef(ridge_best)
+
+
+## Lasso
+
+cv_lasso <- cv.glmnet(X, y, alpha = 1)
+lasso_best <- glmnet(X, y, alpha = 1, lambda = cv_lasso$lambda.min)
+coef(lasso_best)
+
+# RMSE for OLS, Ridge, and Lasso
+
+ols_coef <- coef(ols_model)
+ridge_coef <- as.numeric(coef(ridge_best))
+lasso_coef <- as.numeric(coef(lasso_best))
+
+coef_table <- data.frame(
+  Predictor = c("Intercept", "men_earnings", "women_earnings", "pct_women"),
+  OLS       = ols_coef,
+  Ridge     = ridge_coef,
+  LASSO     = lasso_coef
+)
+
+rmse_values <- data.frame(
+  Predictor = "RMSE",
+  OLS       = rmse(y, ols_pred),
+  Ridge     = rmse(y, ridge_pred[,1]),
+  LASSO     = rmse(y, lasso_pred[,1])
+)
+
+## Table for RSME
+
+report_table <- bind_rows(coef_table, rmse_values)
+report_table
+
+coef_plot_df <- report_table |>
+  filter(Predictor != "RMSE") |>
+  pivot_longer(cols = OLS:LASSO, names_to = "Model", values_to = "Coefficient")
+
+coef_plot_df
+
+$$ RMSE Plot
+
+ggplot(coef_plot_df, aes(x = Predictor, y = Coefficient, fill = Model)) +
+  geom_col(position = "dodge") +
+  labs(
+    title = "Comparison of Regression Coefficients: OLS vs Ridge vs LASSO",
+    x = "Predictor",
+    y = "Coefficient"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5)
+  )
+
