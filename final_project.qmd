@@ -1,0 +1,361 @@
+---
+title: "FinalProjet_STAT627"
+author: Emily and Layne 
+format: html
+editor: visual
+---
+
+Load Libraries
+
+```{r}
+library(readxl)
+library(dplyr)
+library(stringr)
+library(glmnet)
+library(Metrics)
+library(tidyr)
+library(ggplot2)
+```
+
+Load in excel file
+
+```{r}
+reg_df <- read_excel("/Users/laynedibuono/Desktop/AU_Fall_2025/STAT_627/Final_Project/data/wage_df.xlsx", skip = 1)
+
+wages_df <- reg_df |>
+  rename(
+    occupation     = 1, 
+    total_workers  = 2,
+    total_earnings = 3,
+    men_workers    = 4,
+    men_earnings   = 5,
+    women_workers  = 6,
+    women_earnings = 7
+  )
+```
+
+Clean and Preprocess Data
+
+```{r}
+
+clean_numeric <- function(x) {
+  x <- str_replace_all(x, "\\$", "")   
+  x <- str_replace_all(x, ",", "")    
+  x <- na_if(x, "-")                   
+  as.numeric(x)
+}
+
+
+wages_clean <- wages_df |>
+  mutate(
+    total_workers  = clean_numeric(total_workers),
+    men_workers    = clean_numeric(men_workers),
+    women_workers  = clean_numeric(women_workers),
+    total_earnings = clean_numeric(total_earnings),
+    men_earnings   = clean_numeric(men_earnings),
+    women_earnings = clean_numeric(women_earnings),
+    pct_women      = women_workers / total_workers,
+    pct_men        = men_workers / total_workers,     
+    gender_gap     = men_earnings - women_earnings
+  ) |>
+  filter(!is.na(total_earnings))  
+
+
+```
+
+Model Matrix
+
+```{r}
+model_data <- wages_clean |>
+  select(total_earnings, men_earnings, women_earnings, pct_women)
+
+X <- model.matrix(total_earnings ~ men_earnings + women_earnings + pct_women,
+                  data = model_data)[, -1]  
+y <- model_data$total_earnings
+```
+
+Create OSL Baseline & RSME
+
+```{r}
+ols_model <- lm(total_earnings ~ men_earnings + women_earnings + pct_women, data = model_data)
+summary(ols_model)
+
+ols_pred <- predict(ols_model, newdata = model_data)
+rmse(y, ols_pred)
+```
+
+Check for Correlation
+
+```{r}
+corr_data <- wages_clean |>
+  filter(complete.cases(men_earnings, women_earnings))
+
+cor_men_women <- cor(corr_data$men_earnings, corr_data$women_earnings)
+cor_men_women
+```
+
+Plot of Correlation
+
+```{r}
+ggplot(corr_data, aes(x = men_earnings, y = women_earnings)) +
+  geom_point(color = "steelblue", alpha = 0.6) +
+  geom_smooth(method = "lm", color = "purple", se = TRUE) + 
+  labs(
+    title = "Correlation between Men's and Women's Earnings",
+    x = "Men's Median Weekly Earnings",
+    y = "Women's Median Weekly Earnings"
+  ) +
+  theme_minimal() -> corr_plot
+corr_plot
+```
+
+Filter and Check Dim and Len
+
+```{r}
+model_data <- wages_clean |>
+  select(total_earnings, men_earnings, women_earnings, pct_women)
+
+model_data <- model_data[complete.cases(model_data), ]
+
+X <- model.matrix(total_earnings ~ men_earnings + women_earnings + pct_women,
+                  data = model_data)[, -1] 
+y <- model_data$total_earnings
+
+dim(X)      
+length(y)
+```
+
+Ridge Regression & RSME
+
+```{r}
+cv_ridge <- cv.glmnet(X, y, alpha = 0)
+ridge_best <- glmnet(X, y, alpha = 0, lambda = cv_ridge$lambda.min)
+coef(ridge_best)
+
+```
+
+Lasso Regression
+
+```{r}
+cv_lasso <- cv.glmnet(X, y, alpha = 1)
+lasso_best <- glmnet(X, y, alpha = 1, lambda = cv_lasso$lambda.min)
+coef(lasso_best)
+```
+
+Compute RSEM for OLS, Ridge, and Lasso
+
+```{r}
+ols_pred <- predict(ols_model, newdata = model_data)
+rmse(y, ols_pred)
+
+ridge_pred <- predict(ridge_best, newx = X)
+rmse(y, ridge_pred[,1])
+
+lasso_pred <- predict(lasso_best, newx = X)
+rmse(y, lasso_pred[,1])
+```
+
+Table for RSME
+
+```{r}
+
+ols_coef <- coef(ols_model)
+ridge_coef <- as.numeric(coef(ridge_best))
+lasso_coef <- as.numeric(coef(lasso_best))
+
+coef_table <- data.frame(
+  Predictor = c("Intercept", "men_earnings", "women_earnings", "pct_women"),
+  OLS       = ols_coef,
+  Ridge     = ridge_coef,
+  LASSO     = lasso_coef
+)
+
+rmse_values <- data.frame(
+  Predictor = "RMSE",
+  OLS       = rmse(y, ols_pred),
+  Ridge     = rmse(y, ridge_pred[,1]),
+  LASSO     = rmse(y, lasso_pred[,1])
+)
+
+report_table <- bind_rows(coef_table, rmse_values)
+report_table
+```
+
+RMSE Plot
+
+```{r}
+coef_plot_df <- report_table |>
+  filter(Predictor != "RMSE") |>
+  pivot_longer(cols = OLS:LASSO, names_to = "Model", values_to = "Coefficient")
+
+coef_plot_df
+```
+
+Plot for Comparison
+
+```{r}
+ggplot(coef_plot_df, aes(x = Predictor, y = Coefficient, fill = Model)) +
+  geom_col(position = "dodge") +
+  labs(
+    title = "Comparison of Regression Coefficients: OLS vs Ridge vs LASSO",
+    x = "Predictor",
+    y = "Coefficient"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5)
+  ) -> compare_plot
+compare_plot
+```
+
+## Classification
+
+Logistic regression baseline
+
+```{r}
+logreg <- glm(total_earnings ~ men_earnings + women_earnings + pct_women, data = model_data)
+
+summary(logreg)
+```
+
+All predictors are significant based on the p-values. Model shows that the gender composition of the unit (pct_women) is a much stronger driver of total earnings differences than the raw pay levels of men or women, pointing to structural segregation or devaluation effects rather than just within-group pay gaps.
+
+Histogram of fitted values
+
+```{r}
+ggplot(logreg$data, aes(x = logreg$fitted.values)) +
+  geom_histogram( bins = 100) -> fitted_values_plot
+fitted_values_plot
+```
+
+strong bimodal pattern. large peak around low values (0-200). second slightly lower peak around 400-600. Long right tail. Most predicted probabilities are low, most have fitted values under 1000, highest density below 600.
+
+Model predicting mostly low probabilites. one group where the model is very confident the event did not occur ( near 0) and another where the predicted probability is moderate (second peak). few cases where the model predicts high probability.
+
+```{r}
+plot(logreg)
+```
+
+```{r}
+
+```
+
+Random forest classifier
+
+```{r}
+library(randomForest)
+```
+
+```{r}
+set.seed(123)
+n <- nrow(model_data)
+Z <- sample(n,n/2)
+train_data <- model_data[Z,]
+test_data <- model_data[-Z,]
+```
+
+```{r}
+rf_model <- randomForest(total_earnings ~ men_earnings + women_earnings + pct_women, data = train_data, ntree = 500, mtry = 2, importance = TRUE)
+
+rf_model
+```
+
+```{r}
+predictions <- predict(rf_model, newdata = test_data)
+confusion_matrix <- table(predictions, test_data$total_earnings)
+
+confusion_matrix
+```
+
+\*interpre
+
+```{r}
+library(e1071)
+```
+
+```{r}
+set.seed(123)
+n <- nrow(model_data)
+Z <- sample(n,n/2)
+train_data <- model_data[Z,]
+test_data <- model_data[-Z,]
+```
+
+```{r}
+linear_svm <- svm(total_earnings ~ men_earnings + women_earnings + pct_women, data = train_data, kernel = "linear", cost = 1, gamma = 0.1)
+
+linear_svm
+```
+
+\*interpret
+
+Plot
+
+```{r}
+plot(linear_svm, model_data)
+```
+
+```{r}
+radial_svm <- svm(total_earnings ~ men_earnings + women_earnings + pct_women, data = train_data, kernel = "radial")
+
+radial_svm
+```
+
+\*interpret
+
+plot
+
+```{r}
+plot(radial_svm, model_data, grid = 100)
+```
+
+Tuned model
+
+```{r}
+set.seed(1234)
+S_tuned <- tune(svm,total_earnings ~ men_earnings + women_earnings + pct_women, data = model_data, ranges = list(
+  cost = 10^seq(-2,3),
+  kernel = c("linear", "polynomial", "sigmoid", "radial")))
+summary(S_tuned)
+```
+
+Best performing model
+
+```{r}
+S_tuned$best.model
+```
+
+\*interpret
+
+plot
+
+```{r}
+S_tuned$performances |> 
+  ggplot(aes(x = cost, y = error, colour = kernel)) + 
+  geom_line() +
+  scale_x_log10() -> kernel_compare
+kernel_compare
+```
+
+```{r}
+ggsave("kernel_compare.png")
+```
+
+F1 accuracy score
+
+```{r}
+library(caret)
+```
+
+```{r}
+predictions <- predict(logreg, newdata = test_data, type = "raw")  
+probabilities <- predict(logreg, newdata = test_data, type = "prob")
+
+log_f1 <- confusionMatrix(data = predictions, 
+                          reference = test_data$total_earnings,  
+                          mode = "everything", 
+                          positive = "1")
+log_f1
+```
