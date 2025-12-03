@@ -238,10 +238,6 @@ Model predicting mostly low probabilites. one group where the model is very conf
 plot(logreg)
 ```
 
-```{r}
-
-```
-
 Random forest classifier
 
 ```{r}
@@ -263,16 +259,63 @@ rf_model
 ```
 
 ```{r}
+pred_test <- predict(rf_model, newdata = test_data)
+rmse_test <- sqrt(mean((pred_test - test_data$total_earnings)^2))
+rsq_test  <- 1 - sum((pred_test - test_data$total_earnings)^2) / 
+                 sum((test_data$total_earnings - mean(test_data$total_earnings))^2)
+print(paste("Test RMSE:", round(rmse_test, 2)))
+print(paste("Test R²:", round(rsq_test, 4)))
+```
+
+```{r}
+library(ggplot2)
+
+# Assuming you already have these objects from earlier:
+# pred_test <- predict(rf_model, newdata = test_data)
+# and test_data$total_earnings exists
+
+plot_data <- data.frame(
+  actual   = test_data$total_earnings,
+  predicted = pred_test
+)
+
+ggplot(plot_data, aes(x = actual, y = predicted)) +
+  geom_point(color = "#2c7bb6", alpha = 0.7, size = 1.8) +     # nice blue, slightly transparent
+  geom_abline(intercept = 0, slope = 1, color = "red", linewidth = 1.2) +  # perfect line
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed", linewidth = 0.8) +  # optional: show the fitted line
+  labs(
+    title    = "Random Forest: Predicted vs Actual Total Earnings (Test Set)",
+    subtitle = "RMSE = 68.98  |  R² = 97.74%",
+    x        = "Actual Total Earnings",
+    y        = "Predicted Total Earnings"
+  ) +
+  scale_x_continuous(labels = scales::dollar_format()) +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 18),
+    plot.subtitle = element_text(size = 14, color = "darkred"),
+    axis.title    = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  ) +
+  coord_fixed(ratio = 1)   # forces square aspect ratio so the 45° line is truly 45°
+```
+
+```{r}
 predictions <- predict(rf_model, newdata = test_data)
 confusion_matrix <- table(predictions, test_data$total_earnings)
 
 confusion_matrix
 ```
 
-\*interpre
-
 ```{r}
 library(e1071)
+```
+
+```{r}
+model_data$total_earnings <- as.factor(model_data$total_earnings)
+
+glimpse(model_data)
 ```
 
 ```{r}
@@ -284,31 +327,15 @@ test_data <- model_data[-Z,]
 ```
 
 ```{r}
-linear_svm <- svm(total_earnings ~ men_earnings + women_earnings + pct_women, data = train_data, kernel = "linear", cost = 1, gamma = 0.1)
+linear_svm <- svm(total_earnings ~ men_earnings + women_earnings, data = train_data, kernel = "linear")
 
 linear_svm
 ```
 
-\*interpret
-
-Plot
-
 ```{r}
-plot(linear_svm, model_data)
-```
-
-```{r}
-radial_svm <- svm(total_earnings ~ men_earnings + women_earnings + pct_women, data = train_data, kernel = "radial")
+radial_svm <- svm(as.factor(total_earnings) ~ men_earnings + women_earnings + pct_women, data = train_data, kernel = "radial")
 
 radial_svm
-```
-
-\*interpret
-
-plot
-
-```{r}
-plot(radial_svm, model_data, grid = 100)
 ```
 
 Tuned model
@@ -327,8 +354,6 @@ Best performing model
 S_tuned$best.model
 ```
 
-\*interpret
-
 plot
 
 ```{r}
@@ -343,37 +368,88 @@ kernel_compare
 ggsave("kernel_compare.png")
 ```
 
-F1 accuracy score
+## Cross-validation
+
+VIF
 
 ```{r}
-library(caret)
+install.packages("car")
+library(car)
 ```
 
 ```{r}
-predictions <- predict(logreg, newdata = test_data, type = "raw")  
-probabilities <- predict(logreg, newdata = test_data, type = "prob")
-
-log_f1 <- confusionMatrix(data = predictions, 
-                          reference = test_data$total_earnings,  
-                          mode = "everything", 
-                          positive = "1")
-log_f1
+vif(ols_model)
 ```
 
+K-fold cross validation
 
-
-
-### cleaned version
 ```{r}
+library(e1071)
+```
 
-train_clean$total_earnings <- as.factor(train_clean$total_earnings)
+```{r}
+set.seed(123)
+k <- 5
 
-linear_svm <- svm(
-  total_earnings ~ men_earnings + pct_women,
-  data = train_clean,
-  kernel = "linear",
-  cost = 1
-)
+folds <- sample(rep(1:k, length.out = nrow(model_data)))
 
-plot(linear_svm, train_clean)
+accuracies <- c()
 
+for(i in 1:k) {
+  train_fold <- model_data[folds != i, ]
+  test_fold  <- model_data[folds == i, ]
+  
+  # Train SVM
+  model <- svm(
+    total_earnings ~ men_earnings + women_earnings + pct_women,
+    data = train_fold,
+    kernel = "linear",
+    probability = TRUE
+  )
+  
+  # Predictions
+  pred <- predict(model, test_fold)
+  
+  # Accuracy for this fold
+  fold_acc <- mean(pred == test_fold$total_earnings)
+  accuracies[i] <- fold_acc
+}
+
+accuracies
+mean(accuracies)
+
+```
+
+LOOCV
+
+```{r}
+library(boot)
+```
+
+```{r}
+logreg2 <- glm(as.numeric(total_earnings) ~ men_earnings + women_earnings + pct_women, data = model_data)
+
+loocv_result <- cv.glm(model_data, logreg2, K = nrow(model_data))
+
+loocv_mse <- loocv_result$delta[1]
+loocv_rmse <- sqrt(loocv_mse)
+
+loocv_rmse
+```
+
+```{r}
+model_data$total_earnings <- as.numeric(as.character(model_data$total_earnings))
+model_data$men_earnings   <- as.numeric(as.character(model_data$men_earnings))
+model_data$women_earnings <- as.numeric(as.character(model_data$women_earnings))
+model_data$pct_women      <- as.numeric(as.character(model_data$pct_women))
+
+mean_earnings <- mean(model_data$total_earnings, na.rm = TRUE)
+sd_earnings   <- sd(model_data$total_earnings, na.rm = TRUE)
+
+cat("Mean of total_earnings:      ", round(mean_earnings, 2), "\n")
+cat("SD of total_earnings:        ", round(sd_earnings, 2), "\n")
+cat("Naïve benchmark RMSE:        ", round(sd_earnings, 2), "\n")
+cat("Your LOOCV RMSE:              14.50\n")
+cat("Your RMSE as % of the mean:   ", round(14.50 / mean_earnings * 100, 1), "%\n")
+cat("Approximate R² from LOOCV:    ", round(1 - (14.50434^2 / sd_earnings^2), 3), "\n")
+```
