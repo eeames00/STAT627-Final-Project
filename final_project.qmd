@@ -359,3 +359,21 @@ log_f1 <- confusionMatrix(data = predictions,
                           positive = "1")
 log_f1
 ```
+
+
+
+
+### cleaned version
+```{r}
+
+train_clean$total_earnings <- as.factor(train_clean$total_earnings)
+
+linear_svm <- svm(
+  total_earnings ~ men_earnings + pct_women,
+  data = train_clean,
+  kernel = "linear",
+  cost = 1
+)
+
+plot(linear_svm, train_clean)
+
